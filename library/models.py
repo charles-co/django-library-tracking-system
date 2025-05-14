@@ -1,5 +1,9 @@
+from django.conf import settings
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
+
+import datetime
 
 class Author(models.Model):
     first_name = models.CharField(max_length=100)
@@ -41,6 +45,13 @@ class Loan(models.Model):
     loan_date = models.DateField(auto_now_add=True)
     return_date = models.DateField(null=True, blank=True)
     is_returned = models.BooleanField(default=False)
+    due_date = models.DateField(blank=True)
 
     def __str__(self):
         return f"{self.book.title} loaned to {self.member.user.username}"
+
+    def save(self, *args, **kwargs):
+        if self.pk is None:
+            self.due_date = (timezone.now() + datetime.timedelta(days=settings.DEFAULT_DUE_DAYS)).date()
+
+        super().save(*args, **kwargs)

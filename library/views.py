@@ -1,17 +1,19 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from .models import Author, Book, Member, Loan
-from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer
+from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer, ExtendDueDateSerializer, TopMemberSerializer
 from rest_framework.decorators import action
 from django.utils import timezone
+from django.db.models import Count, Q
 from .tasks import send_loan_notification
+import datetime
 
 class AuthorViewSet(viewsets.ModelViewSet):
     queryset = Author.objects.all()
     serializer_class = AuthorSerializer
 
 class BookViewSet(viewsets.ModelViewSet):
-    queryset = Book.objects.all()
+    queryset = Book.objects.select_related("author")
     serializer_class = BookSerializer
 
     @action(detail=True, methods=['post'])
@@ -49,6 +51,30 @@ class MemberViewSet(viewsets.ModelViewSet):
     queryset = Member.objects.all()
     serializer_class = MemberSerializer
 
+    @action(detail=False, methods=['get'])
+    def top_active(self, request, *args, **kwargs):
+        top_members = Member.objects.annotate(
+            active_loans=Count("loans", filter=Q(loans__is_returned=False)))\
+                .filter(active_loans__gte=0).order_by("-active_loans")[:5]
+        serializer = TopMemberSerializer(top_members, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 class LoanViewSet(viewsets.ModelViewSet):
-    queryset = Loan.objects.all()
+    queryset = Loan.objects.select_related("member__user", "book")
     serializer_class = LoanSerializer
+
+    @action(detail=True, methods=['patch'])
+    def extend_due_date(self, request, pk=None, *args, **kwargs):
+        loan: Loan = self.get_object()
+        serializer = ExtendDueDateSerializer(data=request.data)
+
+        serializer.is_valid(raise_exception=True)
+
+        if loan.due_date < timezone.now().date():
+            return Response({
+                "error": "Loan is already overdue"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        loan.due_date = (loan.due_date + datetime.timedelta(days=serializer.validated_data["additional_days"]))
+        loan.save(update_fields=["due_date"])
+
+        return Response(LoanSerializer(loan).data, status=status.HTTP_200_OK)
